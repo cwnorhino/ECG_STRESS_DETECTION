@@ -75,6 +75,22 @@ analyzing heart activity to detect:
 
 ------------------------------------------------------------------------
 
+## some photos 
+
+![image alt](https://github.com/cwnorhino/ECG_STRESS_DETECTION/blob/0181ef793b309926a523a7323d597489c633cc4d/assets/training%20vs%20validation%20accuracy.jpeg)
+training V/s Validation accuracy learning curva
+
+![image alt](https://github.com/cwnorhino/ECG_STRESS_DETECTION/blob/0181ef793b309926a523a7323d597489c633cc4d/assets/AAAAAAAAAAAAAAAAAAAAAAAAAA.jpeg)
+ESP32 Circuit with AD8232
+
+![image alt](https://github.com/cwnorhino/ECG_STRESS_DETECTION/blob/0181ef793b309926a523a7323d597489c633cc4d/assets/raw%20ECG.jpeg)
+Raw ECG signal before filtering
+
+![image alt](https://github.com/cwnorhino/ECG_STRESS_DETECTION/blob/0181ef793b309926a523a7323d597489c633cc4d/assets/filtered%20ecg.jpeg)
+Filtered ECG Signal
+
+--------------------------------------------------------------------------
+
 ## Future Scope
 
 -   Deep learning models (please someone send me a larger dataset)
