@@ -1,7 +1,7 @@
 import socket
 import numpy as np
 import matplotlib.pyplot as plt
-from scipy.signal import butter, filtfilt
+from scipy.signal import butter, filtfilt, iirnotch, savgol_filter
 import neurokit2 as nk
 import pandas as pd
 import joblib
@@ -12,6 +12,7 @@ PORT = 80
 
 
 # LOAD MODEL
+
 model = joblib.load("svm_model_2dataset.pkl")
 scaler = joblib.load("scaler.pkl")
 
@@ -50,25 +51,25 @@ def read_ecg(duration=10, fs=250):
 
 
 
-# FILTER
-def bandpass(signal, fs=250):
-    if len(signal) < fs:
-        return signal
+# FILTERS
 
+def bandpass(signal, fs=250):
     b, a = butter(3, [0.5/(fs/2), 40/(fs/2)], btype='band')
     return filtfilt(b, a, signal)
 
+def notch_filter(signal, fs=250):
+    b, a = iirnotch(50, 30, fs)
+    return filtfilt(b, a, signal)
 
-#NORMALIZE
+
+
+# NORMALIZE
+
 def normalize(ecg):
-    ecg = ecg - np.mean(ecg)
+    ecg = ecg - np.median(ecg)
     std = np.std(ecg)
+    return ecg if std == 0 else ecg / std
 
-    if std == 0:
-        print("Flat signal")
-        return ecg
-
-    return ecg / std
 
 
 # PEAK DETECTION
@@ -82,7 +83,16 @@ def get_rpeaks(ecg, fs=250):
 
 
 
-# HRV FEATURE EXTRACTION
+# BPM
+def calculate_bpm(rpeaks, fs=250):
+    if len(rpeaks) < 2:
+        return 0
+    rr = np.diff(rpeaks) / fs
+    return 60 / np.mean(rr)
+
+
+
+# HRV FEATURES
 
 def extract_hrv(rpeaks, fs=250):
     if len(rpeaks) < 5:
@@ -92,26 +102,22 @@ def extract_hrv(rpeaks, fs=250):
         hrv = nk.hrv_time(rpeaks, sampling_rate=fs)
         hrv_freq = nk.hrv_frequency(rpeaks, sampling_rate=fs)
 
-        mean_hr = 60000 / hrv["HRV_MeanNN"].values[0]
-        nn50 = (hrv["HRV_pNN50"].values[0] / 100) * len(rpeaks)
-
         lf = hrv_freq["HRV_LF"].values[0]
         hf = hrv_freq["HRV_HF"].values[0]
         total = lf + hf if (lf + hf) != 0 else 1
 
         return {
             "Gender": 1,
-            "Mean HR (bpm)": mean_hr,
+            "Mean HR (bpm)": 60000 / hrv["HRV_MeanNN"].values[0],
             "AVNN (ms)": hrv["HRV_MeanNN"].values[0],
             "SDNN (ms)": hrv["HRV_SDNN"].values[0],
-            "NN50 (beats)": nn50,
-            "pNN50 (%)": hrv["HRV_pNN50"].values[0],
             "RMSSD (ms)": hrv["HRV_RMSSD"].values[0],
+            "pNN50 (%)": hrv["HRV_pNN50"].values[0],
             "LF (ms2)": lf,
-            "LF Norm (n.u.)": (lf / total) * 100,
             "HF (ms2)": hf,
-            "HF Norm (n.u.)": (hf / total) * 100,
-            "LF/HF Ratio": hrv_freq["HRV_LFHF"].values[0]
+            "LF/HF Ratio": hrv_freq["HRV_LFHF"].values[0],
+            "LF Norm (n.u.)": (lf / total) * 100,
+            "HF Norm (n.u.)": (hf / total) * 100
         }
 
     except:
@@ -119,84 +125,114 @@ def extract_hrv(rpeaks, fs=250):
 
 
 
-# PREDICTION 
+# SIGNAL QUALITY CHECK
+
+def check_signal_quality(ecg):
+    if np.max(ecg) > 4000 or np.min(ecg) < 10:
+        return False
+    if np.std(ecg) < 20:
+        return False
+    return True
+
+
+
+# STRESS PREDICTION
 
 def predict_stress(features, rpeaks):
 
-    bpm = max((len(rpeaks) / 10) * 60, 60)
+    bpm = calculate_bpm(rpeaks)
     print(f"BPM: {bpm:.1f}")
 
-    # HARD SAFETY (prevents wrong ML output)
-    if bpm < 85:
-        return "Relaxed"
-
-    # BAD SIGNAL
     if features is None:
-        return "Stress detected" if bpm > 100 else "Mild stress"
+        return "Bad Signal"
 
     try:
         df = pd.DataFrame([features])
-
-        expected_cols = scaler.feature_names_in_
-        df = df.reindex(columns=expected_cols, fill_value=0)
-
-        # FIX NaN
+        df = df.reindex(columns=scaler.feature_names_in_, fill_value=0)
         df = df.fillna(0)
-
-        print("\nFeatures:\n", df)
 
         scaled = scaler.transform(df)
         pred = model.predict(scaled)[0]
 
-        # FINAL DECISION LOGIC
-        if bpm > 105:
+        if pred == 1 and bpm > 90:
             return "Stress detected"
         elif pred == 1:
             return "Mild stress"
         else:
             return "Relaxed"
 
-    except Exception as e:
-        print("ML failed → fallback:", e)
+    except:
+        return "Prediction Error"
 
-        if bpm > 100:
-            return "Stress detected"
-        elif bpm > 85:
-            return "Mild stress"
-        else:
-            return "Relaxed"
+
+
+# ARRHYTHMIA
+
+def detect_arrhythmia(rpeaks, fs=250):
+
+    if len(rpeaks) < 5:
+        return "Not enough data"
+
+    rr = np.diff(rpeaks) / fs
+    rr_ms = rr * 1000
+    bpm = 60 / np.mean(rr)
+
+    print(f"\nArrhythmia BPM: {bpm:.1f}")
+    print("RR variability (ms):", np.std(rr_ms))
+
+    if bpm > 110:
+        return "Tachycardia (High HR)"
+    elif bpm < 50:
+        return "Bradycardia (Low HR)"
+    elif np.std(rr_ms) > 80:
+        return "Possible Arrhythmia"
+    else:
+        return "Normal Rhythm"
 
 
 
 # MAIN
 
-ecg = read_ecg(duration=10)
+ecg = read_ecg()
 
 # RAW
 plt.plot(ecg[:1000])
 plt.title("Raw ECG")
 plt.show()
 
-# PROCESS
-ecg = normalize(ecg)
-filtered = bandpass(ecg)
+# QUALITY CHECK
+if not check_signal_quality(ecg):
+    print("Bad signal detected.")
+    exit()
 
-# remove drift
+# PROCESS
+filtered = bandpass(ecg)
+filtered = notch_filter(filtered)
 filtered = filtered - np.mean(filtered)
 
-# FILTERED
-plt.plot(filtered[:1000])
+# RPEAKS BEFORE SMOOTHING
+rpeaks = get_rpeaks(filtered)
+
+# SMOOTH FOR DISPLAY ONLY
+display_signal = normalize(filtered)
+display_signal = savgol_filter(display_signal, 9, 2)
+display_signal = display_signal[250:]
+
+# PLOT FILTERED
+plt.plot(display_signal[:800])
 plt.title("Filtered ECG")
 plt.show()
 
-# PEAKS
-rpeaks = get_rpeaks(filtered)
 print("Detected peaks:", len(rpeaks))
 
 # FEATURES
 features = extract_hrv(rpeaks)
 
-# PREDICTION
+# RESULTS
 prediction = predict_stress(features, rpeaks)
+arrhythmia = detect_arrhythmia(rpeaks)
 
-print("\nResult:", prediction)
+print("\n========== RESULTS ==========")
+print("Stress:", prediction)
+print("Arrhythmia:", arrhythmia)
+print("============================")
